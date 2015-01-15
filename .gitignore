@@ -16,7 +16,6 @@ $RECYCLE.BIN/
 *.dll
 *.pdb
 *.exe
-*.scc
 obj
 bin
 

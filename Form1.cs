@@ -12,6 +12,7 @@ using System.Windows.Forms;
 using Microsoft.Win32;
 using System.Diagnostics;
 
+
 namespace LinqSample
 {
     public partial class Form1 : Form
@@ -24,6 +25,10 @@ namespace LinqSample
         string regKeyName = @"Software\CAD Anwendungen Muigg\Revit_Mapping";
         string metaDataName, mappingDataName;
         string server, user, password, dbName;
+
+        FreebimWebserviceEndpointService service;
+        String dbuser = "manuel.gasteiger";
+        String dbpw = "59wnnV&3?e";
 
         public Form1()
         {
@@ -497,6 +502,58 @@ namespace LinqSample
                 newRow["Parameter_ID"] = item.Parameter_ID;
                 dt_par_element.Rows.Add(newRow);
             }
+        }
+
+        private void button6_Click(object sender, EventArgs e)
+        {
+            service = new FreebimWebserviceEndpointService();
+
+            component[] stuff = service.getAllComponents(dbuser, dbpw);
+            orderedRel[] param, child;
+
+            DataTable table = new DataTable();
+            table.TableName = "allComponents";
+            table.Columns.Add("bsddGuid");
+            table.Columns.Add("Code");
+            table.Columns.Add("desc");
+            table.Columns.Add("freebimId");
+            table.Columns.Add("name");
+            table.Columns.Add("parameters");
+            table.Columns.Add("childs");
+
+            foreach (component c in stuff)
+            {
+                DataRow row = table.NewRow();
+                row["bsddGuid"] = c.bsddGuid;
+                row["code"] = c.code;
+                row["desc"] = c.desc;
+                row["freebimId"] = c.freebimId;
+                row["name"] = c.name;
+
+                param = service.getParameterOf(dbuser, dbpw, c.freebimId);
+                if (param != null)
+                {
+                    foreach (orderedRel p in param)
+                    {
+                        row["parameters"] += service.getParameter(dbuser, dbpw, p.freebimId).name + "; ";
+                    }
+                }
+
+                child = service.getChildsOf(dbuser, dbpw, c.freebimId);
+                if (child != null)
+                {
+                    foreach (orderedRel ch in child)
+                    {
+                        row["childs"] += service.getComponent(dbuser, dbpw, ch.freebimId).name + "; ";
+                    }
+                }
+
+                table.Rows.Add(row);
+            }
+
+            dataGridView8.DataSource = table;
+            table.WriteXml("AllData.xml");
+            //            table.WriteXml("C:\\Users\\user\\Documents\\AllData.xml");
         }
 
     }

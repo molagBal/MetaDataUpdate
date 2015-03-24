@@ -19,16 +19,19 @@ namespace LinqSample
     {
         MetaData metaData;
         Rvt_parameter_mapping rvt_parameter_mapping = new Rvt_parameter_mapping();
-        DataTable Subjects, Properties, Assigns_Properties, Assigns_Measures, prop_par_mapping, Measures, parameters;
+        DataTable Subjects, Properties, Assigns_Properties, Assigns_Measures, prop_par_mapping, Measures, parameters, freeBimWebserviceTable, localFreeBimDataTable;
         string xmlPath;
         Microsoft.Win32.RegistryKey regKey;
         string regKeyName = @"Software\CAD Anwendungen Muigg\Revit_Mapping";
         string metaDataName, mappingDataName;
         string server, user, password, dbName;
 
-        FreebimWebserviceEndpointService service;
+        FreebimWebserviceEndpointService service = new FreebimWebserviceEndpointService();
         String dbuser = "manuel.gasteiger";
         String dbpw = "59wnnV&3?e";
+        List<string> guidList = new List<string>();
+        Dictionary<string, orderedRel[]> childsOf = new Dictionary<string,orderedRel[]>();
+        Dictionary<string, string> freebimName = new Dictionary<string, string>();
 
         public Form1()
         {
@@ -51,304 +54,161 @@ namespace LinqSample
             }
         }
 
-        // load mySQL and create XML
+        private void getAllChildsOf(orderedRel c)
+        {
+            orderedRel[] childs = service.getChildsOf(dbuser, dbpw, c.freebimId);
+            if (childs != null)
+            {
+                int length = childs.Length;
+                guidList.Add(c.freebimId);
+                childsOf.Add(c.freebimId, childs);
+
+                for (var i = 0; i < length; i++)
+                {
+                    var child = childs[i];
+                    getAllChildsOf(child);
+                }
+            }
+        }
+
+        // load freebim data form webservice and store into XML
         private void button2_Click(object sender, EventArgs e)
         {
-            metaData.Clear();
-            getMySqlTables("freebim");
-            dataGridView1.DataSource = metaData.Tables["Properties"];
-            dataGridView2.DataSource = metaData.Tables["Measures"];
-            dataGridView3.DataSource = metaData.Tables["Values"];
-            dataGridView7.DataSource = metaData.Tables["Subjects"];
-            dataGridView8.DataSource = metaData.Tables["Assigns_Properties"];
-            metaData.WriteXml(metaDataName);
+
+            library[] libraries = service.getAllLibraries(dbuser, dbpw);
+            foreach (library l in libraries)
+            {
+                if (l.name == "freeBIM")
+                {
+                    orderedRel[] root = service.getChildsOf(dbuser, dbpw, l.freebimId);
+                    foreach (orderedRel r in root)
+                    {
+                        getAllChildsOf(r);
+                    }
+                }
+            }
+
+            freeBimWebserviceTable = new DataTable();
+            freeBimWebserviceTable.TableName = "allComponents";
+            freeBimWebserviceTable.Columns.Add("bsddGuid");
+            freeBimWebserviceTable.Columns.Add("Code");
+            freeBimWebserviceTable.Columns.Add("desc");
+            freeBimWebserviceTable.Columns.Add("freebimId");
+            freeBimWebserviceTable.Columns.Add("name");
+            freeBimWebserviceTable.Columns.Add("children");
+            
+            component[] componentList = new component[guidList.Count];
+            int i = 0;
+            foreach (string s in guidList)
+            {
+                componentList[i++] = service.getComponent(dbuser, dbpw, s);
+            }
+            foreach (component c in componentList)
+            {
+                DataRow row = freeBimWebserviceTable.NewRow();
+                row["bsddGuid"] = c.bsddGuid;
+                row["code"] = c.code;
+                row["desc"] = c.desc;
+                row["freebimId"] = c.freebimId;
+                row["name"] = c.name;
+                row["children"] = orderedRelToString(childsOf[c.freebimId]);
+
+                freeBimWebserviceTable.Rows.Add(row);
+                freebimName.Add(c.freebimId,c.name);
+            }
+            dataGridView7.DataSource = freeBimWebserviceTable;
+            freeBimWebserviceTable.WriteXml("freeBIMData.xml");
+
         }
-        
-        // load XML and remap parameters
+
+        private string orderedRelToString(orderedRel[] rel)
+        {
+            try
+            {
+                String str = "";
+                for (int i = 0; i < rel.Length; i++)
+                {
+                    str += rel[i].freebimId + "; " ;
+                }
+                return str;
+            }
+            catch (Exception e) {
+                Console.WriteLine(e.Message);
+                return null;
+            }
+        }
 
 
         private void button1_Click(object sender, EventArgs e)
         {
-            metaData.Clear();
-            metaData.ReadXml(metaDataName);
-            Subjects = metaData.Tables["Subjects"];
-            Properties = metaData.Tables["Properties"];
-            int nRows = Subjects.Rows.Count;
-            Assigns_Properties = metaData.Tables["Assigns_Properties"];
-            var results1 = from p in Properties.AsEnumerable()
-                          join r in Assigns_Properties.AsEnumerable() on p.Field<string>("freeBIM_Guid") equals r.Field<string>("Guid_Property")
-                          where r.Field<string>("Guid_Subject") == "1"
-                          select new
-                          {
-                              name = (string)p["Name_Loc"],
-                              phase = (string)r["Guid_Phase"],
-                              desc= (string)p["Description_Loc"]
-                          };
+            DataSet localXml = new DataSet();
+            localXml.ReadXml("freeBIMLocalData.xml");
+            localFreeBimDataTable = localXml.Tables[0];
 
-
-            DataTable result1 = new DataTable();
-            result1.Columns.Add("Name");
-            result1.Columns.Add("Description");
-            result1.Columns.Add("Phase");
-
-            foreach (var item in results1)
-            {
-                DataRow newRow = result1.NewRow();
-                newRow["Name"] = item.name;
-                newRow["Description"] = item.desc;
-                newRow["Phase"] = item.phase;
-
-                result1.Rows.Add(newRow);
-                Console.WriteLine(item.name);
-
-            }
-
-            dataGridView4.DataSource = result1;
-
-            // Measures für einen bestimmten Parameter/Kategorie
-            // Tables: Assigns_Measures, Rvt_Guid_parameter, Measures,
-            Assigns_Measures = metaData.Tables["Assigns_Measures"];
-            Measures = metaData.Tables["Measures"];
-            prop_par_mapping = rvt_parameter_mapping.Tables["prop_par_mapping"];
-
-            
-            var results2 = from m in Measures.AsEnumerable()
-                      join a in Assigns_Measures.AsEnumerable() on m.Field<string>("freeBIM_Guid") equals a.Field<string>("Guid_Measure")
-                           join r in prop_par_mapping.AsEnumerable() on a.Field<string>("Guid_Property") equals r.Field<string>("freeBIM_Guid")
-                      select new{
-                          freeBIM_Guid = (string)r["freeBIM_Guid"],
-                          rvt_ID = (string)r["rvt_Parameter_ID"],
-                          Measure = (string)m["Name_Loc"]
-
-                      };
-
-            DataTable result2 = new DataTable();
-            result2.Columns.Add("Name");
-            result2.Columns.Add("freeBIM_Guid");
-            foreach (var item in results2)
-            {
-                DataRow newRow = result2.NewRow();
-                newRow["freeBIM_Guid"] = item.freeBIM_Guid;
-                newRow["Name"] = item.Measure;
-
-                result2.Rows.Add(newRow);
-                Console.WriteLine(item.Measure);
-
-            }
-
-            dataGridView5.DataSource = result2;
-
-
-        }
-
-        DataTable getTable(string Database, string Tablename, string[] spalten, bool query, string filter)
-        {
-            MySqlConnection conn;
-            string connString = "Server=" + server + ";Database=" + dbName + ";Uid=" + user + ";Pwd=" + password + ";ConvertZeroDateTime=true";
-            try
-            {
-                conn = new MySql.Data.MySqlClient.MySqlConnection(connString);
-                conn.Open();
-            }
-            catch (System.Exception ex)
-            {
-                MessageBox.Show(ex.Message);
-                return null;
-            }
-
-            string sql = null;
-            if (query)
-            {
-                sql = spalten[0];
-            }
-            else
-            {
-                sql = "SELECT ";
-                for (int i = 0; i < (spalten.Length - 1); i++)
-                {
-                    sql += (spalten[i] + ", ");
-                }
-                sql += (spalten[spalten.Length - 1]);
-                sql += (" FROM " + Tablename);
-                sql += filter;
-            }
-            Console.WriteLine("Query: "+sql);
-
-            MySqlCommand command = conn.CreateCommand();
-            command.CommandText = sql;
-            int result = command.ExecuteNonQuery();
-
-            MySqlDataAdapter daDataAdapterMySql = new MySql.Data.MySqlClient.MySqlDataAdapter(sql, conn);
-            DataTable data = new DataTable();
-            try
-            {
-                daDataAdapterMySql.Fill(data);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(ex.Message);
-                return null;
-            }
-
-            return data;
-        }
-
-        private void getMySqlTables(string mySqlDbName)
-        {
-            string filterString;
-            filterString = " WHERE deleted=0";
-            string[] spalten = new string[] { "ID", "Code", "Ifc_Name", "Name", "Description", "Parent_ID" };
-            DataTable Components = getTable(mySqlDbName, "components", spalten, false, filterString);
-
-            spalten = new string[] { "ID", "Code", "Ifc_Name", "Name", "Description", "Parent_ID" };
-            DataTable Material = getTable(mySqlDbName, "material", spalten, false, filterString);
-
-            spalten = new string[] { "ID", "Code", "Description" };
-            DataTable Phases        = getTable(mySqlDbName, "phases", spalten, false, "");
-
-            spalten = new string[] { "ID", "Code", "Name", "Description", "Name_Int", "Descr_Int", "IFC_Guid", "bIsIfcProperty" };
-            filterString = " WHERE bUseInDemo=1";
-            DataTable Parameters = getTable(mySqlDbName, "parameters", spalten, false, filterString);
-
-            filterString = " WHERE deleted=0";
-            spalten = new string[] { "SELECT value_list_defs.ID, value_list_defs.Name, unit_types.Comment FROM value_list_defs LEFT JOIN unit_types ON value_list_defs.Unit_ID = unit_types.ID" };
-            DataTable Measures = getTable(mySqlDbName, null, spalten, true, "");
-
-            spalten = new string[] { "ID", "Description", "Value" };
-            DataTable Values = getTable(mySqlDbName, "value_lists", spalten, false, filterString);
-
-            filterString = " WHERE Parameters.bUseInDemo=1";
-            spalten = new string[] { "SELECT Components.ID AS 'Component', Parameters.ID AS 'Parameter', Parameters.Phase_ID AS 'PhaseID' FROM Components INNER JOIN Parameters ON Parameters.Object_ID = Components.ID " + filterString + " ORDER BY Components.ID" };
-            DataTable Assigns_Properties = getTable(mySqlDbName, null, spalten, true, filterString);
-
-            spalten = new string[] { "SELECT Material.ID AS 'Material', Parameters.ID AS 'Parameter', Parameters.Phase_ID AS 'PhaseID' FROM Material INNER JOIN Parameters ON Parameters.material = Material.ID" + filterString + " ORDER BY Material.ID" };
-            DataTable Assigns_Properties_M = getTable(mySqlDbName, null, spalten, true, "deleted=0");
-
-            spalten = new string[] { "SELECT parameters.ID AS Property, value_list_defs.ID AS Measure FROM parameters LEFT JOIN value_list_defs ON parameters.Value_List_Defs_ID = value_list_defs.ID" + filterString + " ORDER BY parameters.ID" };
-            DataTable Assigns_Measures = getTable(mySqlDbName, null, spalten, true, "deleted=0");
-
-            //filterString = " WHERE value_lists.deleted=0";
-            filterString = " WHERE value_lists.deleted=0";
-            spalten = new string[] { "SELECT value_list_defs.ID AS Measure, value_lists.ID AS Value FROM value_list_defs LEFT JOIN value_lists ON value_list_defs.ID = value_lists.Value_List_Defs_ID" + filterString + " ORDER BY value_list_defs.ID" };
-            DataTable Assigns_Values = getTable(mySqlDbName, null, spalten, true, "deleted=0");
-
-            // fill metaData
-            foreach (DataRow row in Components.Rows)
-            {
-                DataRow newRow = metaData.Tables["Subjects"].NewRow();
-                newRow["freeBIM_Guid"] = "E"+row["ID"];
-                newRow["ShortName"] = row["Code"];
-                newRow["Ifc_Name"] = row["Ifc_Name"];
-                newRow["Name_Loc"] = row["Name"];
-                newRow["Description_Loc"] = row["Description"];
-                if (row["Parent_ID"].ToString().Length > 0)
-                    newRow["Parent_Guid"] = "E" + row["Parent_ID"];
-                else
-                    newRow["Parent_Guid"] = row["Parent_ID"]; ;
-                newRow["IsMat"] = false;
-
-                metaData.Tables["Subjects"].Rows.Add(newRow);
-            }
-            foreach (DataRow row in Material.Rows)
-            {
-                DataRow newRow = metaData.Tables["Subjects"].NewRow();
-                newRow["freeBIM_Guid"] = "M" + row["ID"];
-                newRow["ShortName"] = row["Code"];
-                newRow["Ifc_Name"] = row["Ifc_Name"];
-                newRow["Name_Loc"] = row["Name"];
-                newRow["Description_Loc"] = row["Description"];
-                if (row["Parent_ID"].ToString().Length > 0)
-                    newRow["Parent_Guid"] = "M" + row["Parent_ID"];
-                else
-                    newRow["Parent_Guid"] = row["Parent_ID"];
-                newRow["IsMat"] = true;
-
-                metaData.Tables["Subjects"].Rows.Add(newRow);
-            }
-            foreach (DataRow row in Phases.Rows)
-            {
-                DataRow newRow = metaData.Tables["Phases"].NewRow();
-                newRow["freeBIM_Guid"] = row["ID"];
-                newRow["ShortName"] = row["Code"];
-                newRow["Description_Loc"] = row["Description"];
-
-                metaData.Tables["Phases"].Rows.Add(newRow);
-            }
-            foreach (DataRow row in Parameters.Rows)
-            {
-                DataRow newRow = metaData.Tables["Properties"].NewRow();
-                newRow["freeBIM_Guid"] = row["ID"];
-                newRow["ShortName"] = row["Code"];
-                newRow["Name_Loc"] = row["Name"];
-                newRow["bSDD_Guid"] = row["IFC_Guid"];
-                newRow["bIsInIFC_PSet"] = row["bIsIfcProperty"];
-                newRow["Description_Loc"] = row["Description"];
-
-                metaData.Tables["Properties"].Rows.Add(newRow);
-            }
-            foreach (DataRow row in Measures.Rows)
-            {
-                DataRow newRow = metaData.Tables["Measures"].NewRow();
-                newRow["freeBIM_Guid"] = row["ID"];
-                newRow["Name_Loc"] = row["Name"].ToString().Replace(':', '_');
-
-                metaData.Tables["Measures"].Rows.Add(newRow);
-            }
-            foreach (DataRow row in Values.Rows)
-            {
-                DataRow newRow = metaData.Tables["Values"].NewRow();
-                newRow["freeBIM_Guid"] = row["ID"];
-                newRow["Name_Loc"] = row["Value"];
-                newRow["Description_Loc"] = row["Description"];
-
-                metaData.Tables["Values"].Rows.Add(newRow);
-            }
-            foreach (DataRow row in Assigns_Properties.Rows)
-            {
-                DataRow newRow = metaData.Tables["Assigns_Properties"].NewRow();
-                newRow["Guid_Subject"] = "E"+row["Component"];
-                newRow["Guid_Property"] = row["Parameter"];
-                newRow["Guid_Phase"] = row["PhaseID"];
-
-                metaData.Tables["Assigns_Properties"].Rows.Add(newRow);
-            }
-            foreach (DataRow row in Assigns_Properties_M.Rows)
-            {
-                DataRow newRow = metaData.Tables["Assigns_Properties"].NewRow();
-                newRow["Guid_Subject"] = "M" + row["Material"];
-                newRow["Guid_Property"] = row["Parameter"];
-                newRow["Guid_Phase"] = row["PhaseID"];
-
-                metaData.Tables["Assigns_Properties"].Rows.Add(newRow);
-            }
-            foreach (DataRow row in Assigns_Measures.Rows)
-            {
-                DataRow newRow = metaData.Tables["Assigns_Measures"].NewRow();
-                newRow["Guid_Property"] = row["Property"];
-                newRow["Guid_Measure"] = row["Measure"];
-
-                metaData.Tables["Assigns_Measures"].Rows.Add(newRow);
-            }
-            foreach (DataRow row in Assigns_Values.Rows)
-            {
-                DataRow newRow = metaData.Tables["Assigns_Values"].NewRow();
-                newRow["Guid_Measure"] = row["Measure"];
-                newRow["Guid_Value"] = row["Value"];
-
-                metaData.Tables["Assigns_Values"].Rows.Add(newRow);
-            }
-
+            dataGridView1.DataSource = localFreeBimDataTable;
             
         }
-
         private void button3_Click(object sender, EventArgs e)
         {
-            string[] spalten = new string[] { "ID", "category_integer", "name_deu" };
-            DataTable rvt_categories = getTable("revitmapping", "rvt_categories", spalten, false, "");
-            Rvt_Categories categories = new Rvt_Categories();
-            categories.Tables.Add(rvt_categories);
-            categories.WriteXml(@"C:\Users\user\Documents\GitHub\Revit_Mapping\data\Rvt_Categories.xml");
+//          freeBimWebserviceTable.Merge(localFreeBimDataTable);
+//          DataTable changes = localFreeBimDataTable.GetChanges();
+//          dataGridView8.DataSource = changes;
+
+            var diff = localFreeBimDataTable.AsEnumerable().Except(freeBimWebserviceTable.AsEnumerable(), DataRowComparer.Default);
+
+
+
+            for(int i = freeBimWebserviceTable.Rows.Count -1; i>=0; i--)
+            {
+                for (int j = localFreeBimDataTable.Rows.Count - 1; j >= 0; j--)
+                {
+                    var array1 = freeBimWebserviceTable.Rows[i].ItemArray;
+                    var array2 = localFreeBimDataTable.Rows[j].ItemArray;
+
+                    if (array1.SequenceEqual(array2))
+                    {
+                        Console.WriteLine("Korrekter Eintrag für {0}", freeBimWebserviceTable.Rows[i]["name"]);
+                        freeBimWebserviceTable.Rows.RemoveAt(i);
+//                        localFreeBimDataTable.Rows.RemoveAt(j);
+                        break;
+                    }
+                    else if (freeBimWebserviceTable.Rows[i]["freebimId"] == localFreeBimDataTable.Rows[j]["freebimId"])
+                    {
+                        localFreeBimDataTable.Rows[j]["Code"] = freeBimWebserviceTable.Rows[i]["Code"];
+                        localFreeBimDataTable.Rows[j]["desc"] = freeBimWebserviceTable.Rows[i]["desc"];
+                        localFreeBimDataTable.Rows[j]["freebimId"] = freeBimWebserviceTable.Rows[i]["freebimId"];
+                        localFreeBimDataTable.Rows[j]["name"] = freeBimWebserviceTable.Rows[i]["name"];
+                        localFreeBimDataTable.Rows[j]["children"] = freeBimWebserviceTable.Rows[i]["children"];
+                        break;
+                    }
+                }
+            }
+
+            localFreeBimDataTable.Rows.Add(diff);
+            dataGridView7.DataSource = freeBimWebserviceTable;
+            dataGridView8.DataSource = localFreeBimDataTable;
+            /*
+            foreach (DataRow r in freeBimWebserviceTable.Rows)
+            {
+                foreach (DataRow s in localFreeBimDataTable.Rows)
+                {
+
+
+                }
+                
+                DataRow nr = localFreeBimDataTable.Rows.Find(r["freebimId"]);
+
+                if (nr != null)
+                {
+                    localFreeBimDataTable.Rows.Remove(nr);
+                }
+                localFreeBimDataTable.Rows.Add(r);
+            }
+
+            dataGridView1.DataSource = localFreeBimDataTable;
+            */
         }
+
         private string getDefaultBrowser()
         {
             string browser = string.Empty;
@@ -553,7 +413,7 @@ namespace LinqSample
 
             dataGridView8.DataSource = table;
             table.WriteXml("AllData.xml");
-            //            table.WriteXml("C:\\Users\\user\\Documents\\AllData.xml");
+            table.WriteXml("C:\\Users\\user\\Documents\\AllData.xml");
         }
 
     }
